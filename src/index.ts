@@ -1,6 +1,7 @@
 import { createMcpExpressApp } from "@modelcontextprotocol/express";
 import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
 import { McpServer } from "@modelcontextprotocol/server";
+import type { Request, Response } from "express";
 import { z } from "zod";
 
 const BITVAVO_API = "https://api.bitvavo.com/v2";
@@ -532,24 +533,30 @@ const app =
     host: "0.0.0.0"
   });
 
-app.get("/", (_req, res) => {
-  res.json({
-    name:
-      "bitvavo-eur-volume-mcp",
+app.get(
+  "/",
+  (_req: Request, res: Response) => {
+    res.json({
+      name:
+        "bitvavo-eur-volume-mcp",
 
-    status: "ok",
+      status: "ok",
 
-    mcpEndpoint:
-      "/mcp",
+      mcpEndpoint:
+        "/mcp",
 
-    purpose:
-      "Read-only Bitvavo EUR trading-volume MCP"
-  });
-});
+      purpose:
+        "Read-only Bitvavo EUR trading-volume MCP"
+    });
+  }
+);
 
 app.post(
   "/mcp",
-  async (req, res) => {
+  async (
+    req: Request,
+    res: Response
+  ) => {
     const transport =
       new NodeStreamableHTTPServerTransport({
         sessionIdGenerator:

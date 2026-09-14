@@ -10,6 +10,7 @@
     "@modelcontextprotocol/express": "latest",
     "@modelcontextprotocol/node": "latest",
     "@modelcontextprotocol/server": "latest",
+    "express": "latest",
     "zod": "latest"
   },
   "devDependencies": {

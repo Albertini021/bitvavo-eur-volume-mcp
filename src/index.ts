@@ -346,6 +346,11 @@ const server = new McpServer({
 server.registerTool(
   "scan_eur_volume_anomalies",
   {
+    annotations: {
+      readOnlyHint: true,
+      openWorldHint: true
+    },
+
     description:
       "Scan liquid Bitvavo EUR markets for anomalous CLOSED-candle EUR trading volume. " +
       "For each market, the latest closed candle EUR volume is calculated by summing " +

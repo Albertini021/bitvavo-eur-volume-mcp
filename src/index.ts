@@ -22,6 +22,16 @@ type Trade = {
   price: number;
 };
 
+type OrderBookLevel = [
+  string,
+  string
+];
+
+type OrderBook = {
+  bids: OrderBookLevel[];
+  asks: OrderBookLevel[];
+};
+
 const INTERVAL_MS: Record<string, number> = {
   "1m": 60_000,
   "5m": 300_000,
@@ -206,8 +216,6 @@ async function getVolumeEURByCandle(
 
   const volumeEURByCandle = new Map<number, number>();
 
-  // Inicializamos todas las velas.
-  // Si una vela no tiene trades, su volumen EUR será 0.
   for (const candle of candles) {
     volumeEURByCandle.set(candle.timestamp, 0);
   }
@@ -232,6 +240,115 @@ async function getVolumeEURByCandle(
   }
 
   return volumeEURByCandle;
+}
+
+/**
+ * Obtiene el libro de órdenes actual de Bitvavo.
+ *
+ * Usamos una profundidad fija de 20 niveles por lado:
+ * 20 niveles de bids + 20 niveles de asks.
+ *
+ * Esto NO representa compras/ventas ejecutadas.
+ * Representa liquidez actualmente colocada en el libro.
+ */
+async function getOrderBookPressure(
+  market: string,
+  depth: number
+) {
+  const raw: OrderBook =
+    await bitvavo(
+      `/${encodeURIComponent(
+        market
+      )}/book?depth=${depth}`
+    );
+
+  const bids = Array.isArray(raw.bids)
+    ? raw.bids
+    : [];
+
+  const asks = Array.isArray(raw.asks)
+    ? raw.asks
+    : [];
+
+  const bidDepthEUR = bids.reduce(
+    (sum, level) => {
+      const price = Number(level[0]);
+      const size = Number(level[1]);
+
+      return sum + price * size;
+    },
+    0
+  );
+
+  const askDepthEUR = asks.reduce(
+    (sum, level) => {
+      const price = Number(level[0]);
+      const size = Number(level[1]);
+
+      return sum + price * size;
+    },
+    0
+  );
+
+  const totalDepthEUR =
+    bidDepthEUR + askDepthEUR;
+
+  const bidPressurePct =
+    totalDepthEUR > 0
+      ? (bidDepthEUR / totalDepthEUR) * 100
+      : null;
+
+  const askPressurePct =
+    totalDepthEUR > 0
+      ? (askDepthEUR / totalDepthEUR) * 100
+      : null;
+
+  const orderBookImbalancePct =
+    bidPressurePct !== null &&
+    askPressurePct !== null
+      ? bidPressurePct - askPressurePct
+      : null;
+
+  const bestBid =
+    bids.length > 0
+      ? Number(bids[0][0])
+      : null;
+
+  const bestAsk =
+    asks.length > 0
+      ? Number(asks[0][0])
+      : null;
+
+  const spreadEUR =
+    bestBid !== null &&
+    bestAsk !== null
+      ? bestAsk - bestBid
+      : null;
+
+  const spreadPct =
+    bestBid !== null &&
+    bestAsk !== null &&
+    bestBid > 0
+      ? (spreadEUR! / bestBid) * 100
+      : null;
+
+  return {
+    orderBookDepth: depth,
+
+    bidDepthEUR,
+    askDepthEUR,
+    totalDepthEUR,
+
+    bidPressurePct,
+    askPressurePct,
+
+    orderBookImbalancePct,
+
+    bestBid,
+    bestAsk,
+    spreadEUR,
+    spreadPct
+  };
 }
 
 async function volumeEURAnomaly(
@@ -340,7 +457,7 @@ async function volumeEURAnomaly(
 
 const server = new McpServer({
   name: "bitvavo-eur-volume-mcp",
-  version: "1.0.0"
+  version: "1.1.0"
 });
 
 server.registerTool(
@@ -355,7 +472,10 @@ server.registerTool(
       "Scan liquid Bitvavo EUR markets for anomalous CLOSED-candle EUR trading volume. " +
       "For each market, the latest closed candle EUR volume is calculated by summing " +
       "amount × price for all trades in that candle. It is compared with the average " +
-      "EUR volume of the previous closed candles. Volume is always expressed in EUR.",
+      "EUR volume of the previous closed candles. Volume is always expressed in EUR. " +
+      "For triggered anomalies, the current Bitvavo order book is also analyzed using " +
+      "20 bid and 20 ask levels. Order-book pressure represents resting liquidity, " +
+      "not executed buy/sell flow.",
 
     inputSchema: z.object({
       interval: z
@@ -443,8 +563,6 @@ server.registerTool(
     const results: any[] = [];
     const errors: any[] = [];
 
-    // Concurrencia moderada para reducir el riesgo
-    // de alcanzar los límites públicos de la API.
     for (
       let i = 0;
       i < universe.length;
@@ -497,6 +615,37 @@ server.registerTool(
               -Infinity)
         );
 
+    /**
+     * Solo analizamos el libro de órdenes
+     * de las monedas que ya son anomalías.
+     */
+    const anomaliesWithOrderBook =
+      await Promise.all(
+        anomalies.map(
+          async anomaly => {
+            try {
+              const orderBook =
+                await getOrderBookPressure(
+                  anomaly.market,
+                  20
+                );
+
+              return {
+                ...anomaly,
+                orderBook
+              };
+            } catch (error) {
+              return {
+                ...anomaly,
+                orderBook: null,
+                orderBookError:
+                  String(error)
+              };
+            }
+          }
+        )
+      );
+
     return {
       content: [
         {
@@ -520,7 +669,14 @@ server.registerTool(
               checkedMarkets:
                 universe.length,
 
-              anomalies,
+              orderBookMetric:
+                "20 levels per side; EUR value of resting bids versus asks",
+
+              orderBookInterpretation:
+                "bidPressurePct and askPressurePct represent resting order-book liquidity, not executed buy/sell volume",
+
+              anomalies:
+                anomaliesWithOrderBook,
 
               errors
             },
@@ -551,7 +707,7 @@ app.get(
         "/mcp",
 
       purpose:
-        "Read-only Bitvavo EUR trading-volume MCP"
+        "Read-only Bitvavo EUR trading-volume MCP with order-book pressure"
     });
   }
 );
